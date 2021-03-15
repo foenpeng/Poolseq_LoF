@@ -33,13 +33,16 @@ rm(lof_all_indel,lof_all_snp)
 
 # parse the consequence
 lof_all[,conseq_parsed:=lapply(conseq,strsplit,split="&")]
-unique(rapply(lof_all[,conseq_parsed], function(x) unlist(x))) # list all types of consequence
+#unique(rapply(lof_all[,conseq_parsed], function(x) unlist(x))) # list all types of consequence
 
 lof_all[,frameshift:=unlist(lapply(conseq_parsed, function(x) "frameshift" %in% x | "frameshift" %in% unlist(x)))]
 lof_all[,stop_gained:=unlist(lapply(conseq_parsed, function(x) "stop_gained" %in% x | "stop_gained" %in% unlist(x)))]
 lof_all[,stop_lost:=unlist(lapply(conseq_parsed, function(x) "stop_lost" %in% x | "stop_lost" %in% unlist(x)))]
 lof_all[,start_lost:=unlist(lapply(conseq_parsed, function(x) "start_lost" %in% x | "start_lost" %in% unlist(x)))]
 lof_all[,splice:=unlist(lapply(conseq_parsed, function(x) any(c("splice_acceptor","splice_donor") %in% x) | any(c("splice_acceptor","splice_donor") %in% unlist(x)) ))]
+#lof_all[,synonymous:=unlist(lapply(conseq_parsed, function(x) "synonymous" %in% x ))]
+#lof_all[,missense:=unlist(lapply(conseq_parsed, function(x) "missense" %in% x ))]
+
 
 lof_all[,conseq_parsed:=NULL]
 
@@ -62,7 +65,11 @@ lof_all[,ALF:=(DP_ALT_f+DP_ALT_r)/DP4_sum]
 
 # filter low quality records, cannot use IDV==1,as it drops NA as well
 lof_all_filtered<-lof_all[!(QUAL<20 | DP<20 | IDV %in% c(1:3) | MQ<30 | DP_ALT_f<1 | DP_ALT_r<1),]
+#temp<-lof_all[(QUAL<20 | DP<20 | IDV %in% c(1:3) | MQ<30 | DP_ALT_f<1 | DP_ALT_r<1),]
 
+lof_all_filtered[start_lost==T,.N]
+
+  
 # find gene ID for all genes, first based on gene name, then based on position
 lof_all_filtered[,gene_ID:= ifelse(grepl("^ENS",gene), gene,NA )]
 lof_all_filtered[is.na(gene_ID),gene_name:= gene]
@@ -77,18 +84,23 @@ CDS_info[,cum_length:=cumsum(exon_length),by=transcript_ID]
 CDS_info[,full_length:=sum(exon_length),by=transcript_ID]
 CDS_info[,total_exon:=max(exon_number),by=transcript_ID]
 
-mult_transcript<-CDS_info[,unique(transcript_ID),by=gene_ID][,if(.N>1) .SD,,by=gene_ID]
-unique_transcript<-CDS_info[!mult_transcript,on=c("transcript_ID"="V1")][,unique(transcript_ID),by=gene_ID]
-mult_CDS<-CDS_info[mult_transcript,on=c("transcript_ID"="V1")]
-uniq_CDS<-CDS_info[!mult_CDS,on=c("transcript_ID")]
-mult_CDS[,core:=.N>1,by=list(gene_ID,start,stop)]
-mult_CDS_uniq<-unique(mult_CDS[core==T,],by=c("gene_ID","start","stop"))
-core_CDS<-rbind(uniq_CDS,mult_CDS_uniq,fill=T)
-core_CDS[,c("start_join","stop_join"):=.(start-2,stop+2)]
+# This block of code was used to filter out LoF variants which map to regions could be alternatively spliced out.
+# mult_transcript<-CDS_info[,unique(transcript_ID),by=gene_ID][,if(.N>1) .SD,,by=gene_ID]
+# unique_transcript<-CDS_info[!mult_transcript,on=c("transcript_ID"="V1")][,unique(transcript_ID),by=gene_ID]
+# mult_CDS<-CDS_info[mult_transcript,on=c("transcript_ID"="V1")]
+# uniq_CDS<-CDS_info[!mult_CDS,on=c("transcript_ID")]
+# mult_CDS[,core:=.N>1,by=list(gene_ID,start,stop)]
+# mult_CDS_uniq<-unique(mult_CDS[core==T,],by=c("gene_ID","start","stop"))
+# core_CDS<-rbind(uniq_CDS,mult_CDS_uniq,fill=T)
+# core_CDS[,c("start_join","stop_join"):=.(start-2,stop+2)]
+
+CDS_info[,c("start_join","stop_join"):=.(start-2,stop+2)]
+
+
 lof_all_filtered[,Pos_join:=Pos]
 lof_all_filtered[,Pos_end_join:=Pos+nchar(REF)-1]
-setkeyv(core_CDS,c("LGn", "gene_ID","start_join","stop_join"))
-lof_all_filtered_core_CDS<-foverlaps(lof_all_filtered,core_CDS,by.x=c("LGn", "gene_ID","Pos_join","Pos_end_join"),by.y=c("LGn", "gene_ID","start_join","stop_join"),type="any",mult="all",nomatch=0L)
+setkeyv(CDS_info,c("LGn", "gene_ID","start_join","stop_join"))
+lof_all_filtered_core_CDS<-foverlaps(lof_all_filtered,CDS_info,by.x=c("LGn", "gene_ID","Pos_join","Pos_end_join"),by.y=c("LGn", "gene_ID","start_join","stop_join"),type="any",mult="first",nomatch=0L)
 #temp_duplicated<-temp[duplicated(temp,by=c("gene_ID","start","stop","Pos","lake","LGn")),]
 #lof_excluded<-lof_all_filtered_core_CDS[!temp,on=c("lake","LGn","Pos")]
 rm(mult_transcript,unique_transcript,mult_CDS,mult_CDS_uniq,uniq_CDS,core_CDS)
@@ -100,10 +112,10 @@ lof_all_filtered_core_CDS[!(Pos >= start & Pos <= stop), Pos_approx:= ifelse(abs
 lof_all_filtered_core_CDS[,Pos_gene:=cum_length -(stop-Pos_approx)]
 lof_all_filtered_core_CDS[strand=="-",Pos_gene:=full_length -Pos_gene]
 lof_all_filtered_core_CDS[,Pos_gene_perc:=Pos_gene/full_length]
-# png("./Results/Histogram of distribution of the LoF alleles in a gene.png",width= 3000, height= 1500, res=300)
-# hist(lof_all_filtered_core_CDS[,Pos_gene_perc],breaks=50)
-# dev.off()
-lof_all_filtered_core_CDS<-lof_all_filtered_core_CDS[Pos_gene_perc<=0.95,]
+#png("./Results/Histogram of distribution of the LoF alleles in a gene.png",width= 3000, height= 1500, res=300)
+#hist(lof_all_filtered_core_CDS[,Pos_gene_perc],breaks=50,main="",xlab="Relative Position in Coding Sequence")
+#dev.off()
+lof_all_filtered_core_CDS<-lof_all_filtered_core_CDS[Pos_gene_perc<=0.95 | Pos_gene_perc<=0.05,]
 lof_all_filtered_core_CDS[,c("i.gene_ID","core","start_join","stop_join","LG"):=NULL]
 
 
@@ -112,20 +124,25 @@ setorderv(lof_all_filtered_core_CDS,c("lake","LGn","Pos"))
 lof_all_filtered_core_CDS[,Grouping:=Pos]
 lof_all_filtered_core_CDS[,Pos_lead := shift(Pos,1L,type="lead")]
 lof_all_filtered_core_CDS[,Pos_lag := shift(Pos,1L,type="lag")]
-lof_all_filtered_core_CDS[ (Pos-Pos_lag>0 & Pos-Pos_lag<20) | (Pos_lead-Pos_lag>0 &Pos_lead-Pos<20), Grouping:= 0L]
+lof_all_filtered_core_CDS[ (Pos-Pos_lag>0 & Pos-Pos_lag<20) | (Pos_lead-Pos>0 &Pos_lead-Pos<20), Grouping:= 0L]
+
+# png("./Results/Distribution of the distance between adjacent LoF alleles.png",width= 3000, height= 1500, res=300)
+# hist(lof_all_filtered_core_CDS[Pos-Pos_lag>0 & Pos-Pos_lag<200, Pos-Pos_lag],breaks=50,main="",xlab="Distance between Adjacent LoF variants")
+# dev.off()
+
 lof_all_filtered_core_CDS<-lof_all_filtered_core_CDS[lof_all_filtered_core_CDS[,.I[which.max(DP_ALT_f+DP_ALT_r)],by=rleid(Grouping)]$V1]
 lof_all_filtered_core_CDS[,c("Pos_lead","Pos_lag"):=NULL]
 
 
 # find the list of the genes which frameshif mutation has been corrected by frame restoring indels
-temp<-lof_all_filtered_core_CDS[frameshift==T,.(No_frameshift=sum(frameshift==T),Pos=Pos,Pos_gene=Pos_gene,conseq=conseq,ALF=ALF,frameshift=frameshift,REF=REF,ALT=ALT,Pos_gene),by=c("lake","gene")][No_frameshift>1]
-temp[,ref_bp:=nchar(REF)]
-temp[,alt_bp:=nchar(ALT)]
-temp[grepl(",",ALT),alt_bp:=NA]
-frame_restored_loci[,gap_length:=max(Pos_gene)-min(Pos_gene),by=.(lake,gene)]
-frame_restored_loci<-temp[,diff:=if(!anyNA(alt_bp)) abs(sum(ref_bp)-sum(alt_bp)) ,by=c("lake","gene")][diff%%3==0,]
-lof_all_filtered_core_CDS<-lof_all_filtered_core_CDS[!frame_restored_loci,on=.(lake,gene,Pos)]
-rm(temp)
+# temp<-lof_all_filtered_core_CDS[frameshift==T,.(No_frameshift=sum(frameshift==T),Pos=Pos,Pos_gene=Pos_gene,conseq=conseq,ALF=ALF,frameshift=frameshift,REF=REF,ALT=ALT,Pos_gene),by=c("lake","gene")][No_frameshift>1]
+# temp[,ref_bp:=nchar(REF)]
+# temp[,alt_bp:=nchar(ALT)]
+# temp[grepl(",",ALT),alt_bp:=NA]
+# frame_restored_loci[,gap_length:=max(Pos_gene)-min(Pos_gene),by=.(lake,gene)]
+# frame_restored_loci<-temp[,diff:=if(!anyNA(alt_bp)) abs(sum(ref_bp)-sum(alt_bp)) ,by=c("lake","gene")][diff%%3==0,]
+# lof_all_filtered_core_CDS<-lof_all_filtered_core_CDS[!frame_restored_loci,on=.(lake,gene,Pos)]
+# rm(temp)
 
 # create a by locus data.table with allele frequency of each lake as columns
 lof_all_filtered_core_CDS[,paste0("ALF_", files):=lapply(files, function(i) ALF*(as.integer(lake==i)))]
@@ -137,10 +154,10 @@ lof_all_filtered_bylocus<-lof_all_filtered_bylocus[,c("LGn" ,          "gene_ID"
                                                       "DP_ALT_f",      "DP_ALT_r" ,     "DP4_sum" ,"ALF",      
                                                       "ALF_boot",      "ALF_echo", "ALF_fred", "ALF_gos", "ALF_law", "ALF_pach","ALF_rob","ALF_say"  )] 
 
+
 # create a by gene data.table, the allele frequency is filled with max value from any LOF alleles in that gene
 temp<-lof_all_filtered_bylocus
 temp[,(20:27):=lapply(.SD, max),.SDcols=20:27, by=list(LGn, gene_ID)]
-lof_all_filtered_bylocus[,.N,by=c("LGn","gene_ID")]
 lof_all_filtered_bygene<-unique(temp, by=c("LGn","gene_ID"))
 lof_all_filtered_bygene<-lof_all_filtered_bygene[lof_all_filtered_bylocus[,.N,by=c("LGn","gene_ID")],on=c("LGn","gene_ID")]
 lof_all_filtered_bygene[,min_ALF:=pmin(ALF_boot,ALF_echo,ALF_fred,ALF_gos,ALF_law,ALF_pach,ALF_rob,ALF_say)]
@@ -151,10 +168,26 @@ lof_all_filtered_bygene[, No_pres_pop:=rowSums((sapply(.SD, function(x) x>0))),.
 rm(temp)
 
 
+
+## lof_all_filtered_bylocus ALF value changed after running the above bygene section, strange
+
+freshwater_adaptive_lost<-lof_all_filtered_bygene[N>1 & col_min=="ALF_say" & ALF_say<0.1 & max_ALF-min_ALF>0.7 ,][,gene_ID]
+lof_all_filtered_bylocus_group<-lof_all_filtered_bylocus[,if(.N>1 & (max(Pos)-min(Pos))>2) .SD, by=.(LGn,gene_ID)]
+freshwater_adaptive_lost_locus<-lof_all_filtered_bylocus_group[gene_ID %in% freshwater_adaptive_lost]
+
+
+####
+gene_info_regression<-CDS_info[,.(full_length[1],total_exon[1]),by=.(gene_ID,transcript_ID)][,.("No_transcript"=.N,"full_length"=max(V1),"total_exon"=max(V2)),by=gene_ID]
+gene_info_regression<-gene_info[gene_info_regression,on=c("GeneID"="gene_ID")]
+gene_info_regression[,N_lof:=lof_all_filtered_bygene[match(GeneID,gene_ID),N]]
+gene_info_regression[,lof_pres:=ifelse(is.na(N_lof),0,1)]
+summary(glm(lof_pres~No_transcript+full_length+total_exon,data=gene_info_regression,family="binomial"))
+
+
 # rob has the most pop specific lof alleles
-png("./Results/Number of pop specific LoF genes per population.png",width=3000,height=1500,res=300)
+#png("./Results/Number of pop specific LoF genes per population.png",width=3000,height=1500,res=300)
 barplot(table(lof_all_filtered_bygene[No_pres_pop==1, col_max])) 
-dev.off()
+#dev.off()
 
 lof_all_filtered_bygene[No_pres_pop==8,.N] # 989 lof genes are shared by all pops
 lof_all_filtered_bygene[No_pres_pop==7 & col_min=="ALF_say",gene_ID] # 72 lof genes are only present in freshwater lakes
@@ -165,8 +198,8 @@ lof_all_filtered_bygene[No_pres_pop==1 & col_max=="ALF_say",gene_ID] # 111 lof g
 rob0.6_gos0_lof<-lof_all_filtered_bygene[ALF_gos==0 & ALF_rob>0.8,]
 gos0.6_rob0_lof<-lof_all_filtered_bygene[ALF_rob==0 & ALF_gos>0.8,]
 
-fwrite(rob0.6_gos0_lof,"./Results/rob0.6_gos0_lof.csv")
-fwrite(gos0.6_rob0_lof,"./Results/gos0.6_rob0_lof.csv")
+#fwrite(rob0.6_gos0_lof,"./Results/rob0.6_gos0_lof.csv")
+#fwrite(gos0.6_rob0_lof,"./Results/gos0.6_rob0_lof.csv")
 
 ### validation with Brian's Rob and Gos expression data
 expression_rob_gos_population<-fread("./Data/Lohman_expression/Love_Population.csv")
@@ -215,16 +248,16 @@ PBS_slide_500snp[,GRFst_ranking:=rank(-GRFst, na.last=T,ties.method = "random" )
 
 lof_20kb<-PBS_slide_20kb[GRFst.focal==T,][lof_all_filtered_bygene,on=c("LGn","window_start<=Pos","window_end>=Pos"),nomatch=0L]
 lof_20kb<-lof_20kb[lof_20kb[,.I[which.max(GRFst)],by=.(LGn, gene_ID)]$V1]
-lof_20kb<-lof_20kb[,RG_AFD:=ALF_rob-ALF_gos][abs(RG_AFD)>0.3 & (ALF_rob==0 | ALF_gos==0)]
+#lof_20kb<-lof_20kb[,RG_AFD:=ALF_rob-ALF_gos][abs(RG_AFD)>0.3 & (ALF_rob==0 | ALF_gos==0)]
 setorder(lof_20kb,"GRFst_ranking")
 
 lof_500snp<-PBS_slide_500snp[GRFst.focal==T,][lof_all_filtered_bygene,on=c("LGn","Pos_start<=Pos","Pos_end>=Pos"),nomatch=0L]
 lof_500snp<-lof_500snp[lof_500snp[,.I[which.max(GRFst)],by=.(LGn, gene_ID)]$V1]
-lof_500snp<-lof_500snp[,RG_AFD:=ALF_rob-ALF_gos][abs(RG_AFD)>0.3 & (ALF_rob==0 | ALF_gos==0)]
+#lof_500snp<-lof_500snp[,RG_AFD:=ALF_rob-ALF_gos][abs(RG_AFD)>0.3 & (ALF_rob==0 | ALF_gos==0)]
 setorder(lof_500snp,"GRFst_ranking")
 
-fwrite(lof_500snp,"./Results/lof_500snpGRFst0.99_overlap.csv")
-fwrite(lof_20kb,"./Results/lof_20kbGRFst0.99_overlap.csv")
+#fwrite(lof_500snp,"./Results/lof_500snpGRFst0.99_overlap.csv")
+#fwrite(lof_20kb,"./Results/lof_20kbGRFst0.99_overlap.csv")
 
 expression_rob_gos_population[lof_20kb,on=c("V1"="gene_ID"),nomatch=0L][,keyby=GRFst]
 expression_rob_gos_population[lof_500snp,on=c("V1"="gene_ID"),nomatch=0L][,keyby=GRFst]
@@ -237,4 +270,23 @@ expression_rob_gos_population[lof_500snp,on=c("V1"="gene_ID"),nomatch=0L][,keyby
 # gos0.6_rob0_lof_PBS<-PBS_slide_20kb[gos0.6_rob0_lof,on=c("LGn","window_start<=Pos","window_end>=Pos")]
 # gos0.6_rob0_lof_PBS<-gos0.6_rob0_lof_PBS[gos0.6_rob0_lof_PBS[,.I[which.max(GRFst)],by=.(LGn, window_start)]$V1]
 
+### analysis combining Lohman's expression data with population genetics
+gene_info_Lohman<-fread("gene_info_Lohman.csv")
+expression_with_position<-gene_info_Lohman[expression_rob_gos_population,on=c("GeneID"="V1")]
+setkeyv(PBS_slide_20kb,c("LGn","window_start","window_end"))
+exp_Fst_20kb<-foverlaps(expression_with_position,PBS_slide_20kb[GRFst.focal==T,],by.x = c("LGn","start","stop"),nomatch=0L)
+exp_Fst_20kb<-exp_Fst_20kb[exp_Fst_20kb[,.I[which.max(GRFst)],by=.(LGn, GeneID)]$V1]
+setorder(exp_Fst_20kb,"GRFst_ranking")
 
+setkeyv(PBS_slide_500snp,c("LGn","Pos_start","Pos_end"))
+exp_Fst_500snp<-foverlaps(expression_with_position,PBS_slide_500snp[GRFst.focal==T,],by.x = c("LGn","start","stop"),nomatch=0L)
+exp_Fst_500snp<-exp_Fst_500snp[exp_Fst_500snp[,.I[which.max(GRFst)],by=.(LGn, GeneID)]$V1]
+setorder(exp_Fst_500snp,"GRFst_ranking")
+
+PBS_slide_20kb_GRFst_focal<-PBS_slide_20kb[GRFst.focal==T]
+PBS_slide_20kb_GRFst_focal_lof<-lof_20kb[PBS_slide_20kb_GRFst_focal[,.(GRFst,GRFst_ranking)],on=c("GRFst_ranking")]
+PBS_slide_20kb_GRFst_focal_exp<-exp_Fst_20kb[PBS_slide_20kb_GRFst_focal[,.(GRFst,GRFst_ranking)],on=c("GRFst_ranking")]
+PBS_slide_20kb_GRFst_all<-PBS_slide_20kb_GRFst_focal_lof[PBS_slide_20kb_GRFst_focal_exp,on=c("GRFst_ranking")]
+setorder(PBS_slide_20kb_GRFst_all,"GRFst_ranking")
+PBS_slide_20kb_GRFst_all<-PBS_slide_20kb_GRFst_all[,.(GRFst_ranking,LGn,GeneID,pvalue,gene_ID,conseq)]
+ 
