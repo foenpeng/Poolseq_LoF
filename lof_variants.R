@@ -65,9 +65,11 @@ lof_all[,ALF:=(DP_ALT_f+DP_ALT_r)/DP4_sum]
 
 # filter low quality records, cannot use IDV==1,as it drops NA as well
 lof_all_filtered<-lof_all[!(QUAL<20 | DP<20 | IDV %in% c(1:3) | MQ<30 | DP_ALT_f<1 | DP_ALT_r<1),]
-#temp<-lof_all[(QUAL<20 | DP<20 | IDV %in% c(1:3) | MQ<30 | DP_ALT_f<1 | DP_ALT_r<1),]
 
-lof_all_filtered[start_lost==T,.N]
+## calculate by lake and by locus statistics
+#temp<-lof_all_filtered[frameshift==T,.N,keyby=.(lake)][,N]
+#sd(temp)/mean(temp)
+#lof_all_filtered[,.(.N),by=.(LGn,Pos,conseq)]
 
   
 # find gene ID for all genes, first based on gene name, then based on position
@@ -103,7 +105,7 @@ setkeyv(CDS_info,c("LGn", "gene_ID","start_join","stop_join"))
 lof_all_filtered_core_CDS<-foverlaps(lof_all_filtered,CDS_info,by.x=c("LGn", "gene_ID","Pos_join","Pos_end_join"),by.y=c("LGn", "gene_ID","start_join","stop_join"),type="any",mult="first",nomatch=0L)
 #temp_duplicated<-temp[duplicated(temp,by=c("gene_ID","start","stop","Pos","lake","LGn")),]
 #lof_excluded<-lof_all_filtered_core_CDS[!temp,on=c("lake","LGn","Pos")]
-rm(mult_transcript,unique_transcript,mult_CDS,mult_CDS_uniq,uniq_CDS,core_CDS)
+#rm(mult_transcript,unique_transcript,mult_CDS,mult_CDS_uniq,uniq_CDS,core_CDS)
 
 # calculate the relative position of the mutation in the gene
 #lof_all_filtered_core_CDS<-CDS_info[lof_all_filtered,on=c("LGn", "start_join<=Pos_join", "end_join>=Pos_join")]
@@ -156,7 +158,7 @@ lof_all_filtered_bylocus<-lof_all_filtered_bylocus[,c("LGn" ,          "gene_ID"
 
 
 # create a by gene data.table, the allele frequency is filled with max value from any LOF alleles in that gene
-temp<-lof_all_filtered_bylocus
+temp<-copy(lof_all_filtered_bylocus)
 temp[,(20:27):=lapply(.SD, max),.SDcols=20:27, by=list(LGn, gene_ID)]
 lof_all_filtered_bygene<-unique(temp, by=c("LGn","gene_ID"))
 lof_all_filtered_bygene<-lof_all_filtered_bygene[lof_all_filtered_bylocus[,.N,by=c("LGn","gene_ID")],on=c("LGn","gene_ID")]
@@ -167,31 +169,84 @@ lof_all_filtered_bygene[, col_max:= colnames(.SD)[max.col(.SD, ties.method = "fi
 lof_all_filtered_bygene[, No_pres_pop:=rowSums((sapply(.SD, function(x) x>0))),.SDcols=20:27]
 rm(temp)
 
+# rob has the most pop specific lof alleles
+#png("./Results/Number of pop specific LoF genes per population.png",width=3000,height=1500,res=300)
+barplot(table(lof_all_filtered_bygene[No_pres_pop==1, col_max])) 
+#dev.off()
+
+lof_all_filtered_bygene[N>1,.N] # 1992 genes have more than on LoF alleles
+lof_all_filtered_bygene[No_pres_pop==8,.N] # 1433 lof genes are shared by all pops
+lof_all_filtered_bygene[No_pres_pop==1,.N] # 984 genes are unique to one pop
+lof_all_filtered_bygene[No_pres_pop==7 & col_min=="ALF_say",.N] # 92 lof genes are only present in freshwater lakes
+lof_all_filtered_bygene[No_pres_pop==1 & col_max=="ALF_say",.N] # 121 lof genes are only present in say
 
 
-## lof_all_filtered_bylocus ALF value changed after running the above bygene section, strange
 
-freshwater_adaptive_lost<-lof_all_filtered_bygene[N>1 & col_min=="ALF_say" & ALF_say<0.1 & max_ALF-min_ALF>0.7 ,][,gene_ID]
-lof_all_filtered_bylocus_group<-lof_all_filtered_bylocus[,if(.N>1 & (max(Pos)-min(Pos))>2) .SD, by=.(LGn,gene_ID)]
-freshwater_adaptive_lost_locus<-lof_all_filtered_bylocus_group[gene_ID %in% freshwater_adaptive_lost]
 
+
+# lof_all_filtered_bylocus ALF value changed after running the above bygene section, strange
+# SOLUTION: need to use copy(), instead of direclty <-.
+
+
+### recombination rate analysis
+# using recombination rate data from https://onlinelibrary.wiley.com/doi/full/10.1111/mec.12322
+# the recombination rate from https://www.g3journal.org/content/5/7/1463 is not useful, because the marker position is not consistent with genetic map position.
+# But I will still use the convertCoordinate function from the G3 paper to convert the coordinate of genes to the assembly of G3, but use recombination rate from MolEcol paper, as being done in https://www.sciencedirect.com/science/article/pii/S0960982218316786#bib17
+source("./Data/Recombination/convertCoordinate.R")
+recombination_rate<-fread("./Data/Recombination/Recombination_rate_MolEco_2013.txt")
+convertCoordinate(1,100,"old2new","./Data/Recombination/FileS4 NewScaffoldOrder.csv")
+recombination_rate[,gen_dist:=cM-data.table::shift(cM,1L),by=chromosome_reassembled]
+recombination_rate[,phy_dist:=position_reassembled-data.table::shift(position_reassembled,1L),by=chromosome_reassembled]
+recombination_rate[,recomb_rate:=gen_dist/phy_dist*10e6]
+recombination_rate[,position_start:=data.table::shift(position_reassembled,1L,fill=0),by=chromosome_reassembled]
+setkeyv(recombination_rate,c("chromosome_reassembled", "position_start","position_reassembled"))
 
 ####
 gene_info_regression<-CDS_info[,.(full_length[1],total_exon[1]),by=.(gene_ID,transcript_ID)][,.("No_transcript"=.N,"full_length"=max(V1),"total_exon"=max(V2)),by=gene_ID]
 gene_info_regression<-gene_info[gene_info_regression,on=c("GeneID"="gene_ID")]
 gene_info_regression[,N_lof:=lof_all_filtered_bygene[match(GeneID,gene_ID),N]]
 gene_info_regression[,lof_pres:=ifelse(is.na(N_lof),0,1)]
-summary(glm(lof_pres~No_transcript+full_length+total_exon,data=gene_info_regression,family="binomial"))
+gene_info_regression<-foverlaps(gene_info_regression,recombination_rate[,c("chromosome_reassembled", "position_start","position_reassembled","recomb_rate")],by.x=c("LGn", "start","stop"),by.y=c("chromosome_reassembled", "position_start","position_reassembled"),type="any",mult="first",nomatch=0L)
+
+summary(glm(lof_pres~No_transcript+full_length+total_exon+recomb_rate,data=gene_info_regression,family="binomial"))
+
+## GO analysis
+library(topGO)
+library(biomaRt)
+# select mart and data set
+bm <- useMart("ensembl")
+bm <- useDataset("gaculeatus_gene_ensembl", mart=bm)
+# Get ensembl gene ids and GO terms
+EG2GO <- getBM(mart=bm, attributes=c('ensembl_gene_id','go_id'))
+# examine result
+head(EG2GO,15)
+# Remove blank entries
+EG2GO <- EG2GO[EG2GO$go_id != '',]
+# convert from table format to list format
+geneID2GO <- by(EG2GO$go_id,
+                EG2GO$ensembl_gene_id,
+                function(x) as.character(x))
+# examine result
+head(geneID2GO)
+
+LoFgeneList<-factor(gene_info_regression[,lof_pres])
+names(LoFgeneList)<-gene_info_regression[,GeneID]
+GOdata <- new("topGOdata", ontology = "BP", allGenes = LoFgeneList,  annot = annFUN.gene2GO, gene2GO = geneID2GO)
+resultFisher <- runTest(GOdata, algorithm = "weight01", statistic = "fisher")
+allRes <- GenTable(GOdata, classic = resultFisher, ranksOf = "classic", topNodes = 20)
 
 
-# rob has the most pop specific lof alleles
-#png("./Results/Number of pop specific LoF genes per population.png",width=3000,height=1500,res=300)
-barplot(table(lof_all_filtered_bygene[No_pres_pop==1, col_max])) 
-#dev.off()
 
-lof_all_filtered_bygene[No_pres_pop==8,.N] # 989 lof genes are shared by all pops
-lof_all_filtered_bygene[No_pres_pop==7 & col_min=="ALF_say",gene_ID] # 72 lof genes are only present in freshwater lakes
-lof_all_filtered_bygene[No_pres_pop==1 & col_max=="ALF_say",gene_ID] # 111 lof genes are only present in say
+
+freshwater_adaptive_lost<-lof_all_filtered_bygene[N>1 & col_min=="ALF_say" & ALF_say<0.1 & max_ALF-min_ALF>0.7 ,][,gene_ID]
+lof_all_filtered_bylocus_group<-lof_all_filtered_bylocus[,if(.N>1 & (max(Pos)-min(Pos))>2) .SD, by=.(LGn,gene_ID)]
+freshwater_adaptive_lost_locus<-lof_all_filtered_bylocus_group[gene_ID %in% freshwater_adaptive_lost]
+
+freshLoFgeneList<-factor(as.numeric(gene_info_regression[,GeneID] %in% freshwater_adaptive_lost))
+names(freshLoFgeneList)<-gene_info_regression[,GeneID]
+freshGOdata <- new("topGOdata", ontology = "BP", allGenes = freshLoFgeneList, annot = annFUN.gene2GO, gene2GO = geneID2GO)
+freshresultFisher <- runTest(freshGOdata, algorithm = "weight01", statistic = "fisher")
+freshallRes <- GenTable(freshGOdata, classic = freshresultFisher, ranksOf = "classic", topNodes = 20)
 
 
 
