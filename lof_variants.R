@@ -87,25 +87,26 @@ CDS_info[,full_length:=sum(exon_length),by=transcript_ID]
 CDS_info[,total_exon:=max(exon_number),by=transcript_ID]
 
 # This block of code was used to filter out LoF variants which map to regions could be alternatively spliced out.
-# mult_transcript<-CDS_info[,unique(transcript_ID),by=gene_ID][,if(.N>1) .SD,,by=gene_ID]
-# unique_transcript<-CDS_info[!mult_transcript,on=c("transcript_ID"="V1")][,unique(transcript_ID),by=gene_ID]
-# mult_CDS<-CDS_info[mult_transcript,on=c("transcript_ID"="V1")]
-# uniq_CDS<-CDS_info[!mult_CDS,on=c("transcript_ID")]
-# mult_CDS[,core:=.N>1,by=list(gene_ID,start,stop)]
-# mult_CDS_uniq<-unique(mult_CDS[core==T,],by=c("gene_ID","start","stop"))
-# core_CDS<-rbind(uniq_CDS,mult_CDS_uniq,fill=T)
-# core_CDS[,c("start_join","stop_join"):=.(start-2,stop+2)]
+mult_transcript<-CDS_info[,unique(transcript_ID),by=gene_ID][,if(.N>1) .SD,,by=gene_ID]
+unique_transcript<-CDS_info[!mult_transcript,on=c("transcript_ID"="V1")][,unique(transcript_ID),by=gene_ID]
+mult_CDS<-CDS_info[mult_transcript,on=c("transcript_ID"="V1")]
+uniq_CDS<-CDS_info[!mult_CDS,on=c("transcript_ID")]
+mult_CDS[,N:=.N,by=list(gene_ID,start,stop)]
+mult_CDS[,N_transcript:=length(unique(transcript_ID)),by=.(gene_ID)]
+mult_CDS[,core:=ifelse(N==N_transcript, T, F)]
 
-CDS_info[,c("start_join","stop_join"):=.(start-2,stop+2)]
+mult_CDS_uniq<-unique(mult_CDS[core==T,],by=c("gene_ID","start","stop"))
+core_CDS<-rbind(uniq_CDS,mult_CDS_uniq,fill=T)
+core_CDS[,c("start_join","stop_join"):=.(start-2,stop+2)]
 
 
 lof_all_filtered[,Pos_join:=Pos]
 lof_all_filtered[,Pos_end_join:=Pos+nchar(REF)-1]
-setkeyv(CDS_info,c("LGn", "gene_ID","start_join","stop_join"))
-lof_all_filtered_core_CDS<-foverlaps(lof_all_filtered,CDS_info,by.x=c("LGn", "gene_ID","Pos_join","Pos_end_join"),by.y=c("LGn", "gene_ID","start_join","stop_join"),type="any",mult="first",nomatch=0L)
+setkeyv(core_CDS,c("LGn", "gene_ID","start_join","stop_join"))
+lof_all_filtered_core_CDS<-foverlaps(lof_all_filtered,core_CDS,by.x=c("LGn", "gene_ID","Pos_join","Pos_end_join"),by.y=c("LGn", "gene_ID","start_join","stop_join"),type="any",mult="all",nomatch=0L)
 #temp_duplicated<-temp[duplicated(temp,by=c("gene_ID","start","stop","Pos","lake","LGn")),]
 #lof_excluded<-lof_all_filtered_core_CDS[!temp,on=c("lake","LGn","Pos")]
-#rm(mult_transcript,unique_transcript,mult_CDS,mult_CDS_uniq,uniq_CDS,core_CDS)
+rm(mult_transcript,unique_transcript,mult_CDS,mult_CDS_uniq,uniq_CDS,core_CDS)
 
 # calculate the relative position of the mutation in the gene
 #lof_all_filtered_core_CDS<-CDS_info[lof_all_filtered,on=c("LGn", "start_join<=Pos_join", "end_join>=Pos_join")]
@@ -118,14 +119,14 @@ lof_all_filtered_core_CDS[,Pos_gene_perc:=Pos_gene/full_length]
 #hist(lof_all_filtered_core_CDS[,Pos_gene_perc],breaks=50,main="",xlab="Relative Position in Coding Sequence")
 #dev.off()
 lof_all_filtered_core_CDS<-lof_all_filtered_core_CDS[Pos_gene_perc<=0.95 | Pos_gene_perc<=0.05,]
-lof_all_filtered_core_CDS[,c("i.gene_ID","core","start_join","stop_join","LG"):=NULL]
+lof_all_filtered_core_CDS[,c("i.gene_ID","core","start_join","stop_join","LG","N","N_transcript"):=NULL]
 
 
 # for the ones that are within 20  bps, only keep one with the largest alternative allele depth
 setorderv(lof_all_filtered_core_CDS,c("lake","LGn","Pos"))
 lof_all_filtered_core_CDS[,Grouping:=Pos]
-lof_all_filtered_core_CDS[,Pos_lead := shift(Pos,1L,type="lead")]
-lof_all_filtered_core_CDS[,Pos_lag := shift(Pos,1L,type="lag")]
+lof_all_filtered_core_CDS[,Pos_lead := data.table::shift(Pos,1L,type="lead")]
+lof_all_filtered_core_CDS[,Pos_lag := data.table::shift(Pos,1L,type="lag")]
 lof_all_filtered_core_CDS[ (Pos-Pos_lag>0 & Pos-Pos_lag<20) | (Pos_lead-Pos>0 &Pos_lead-Pos<20), Grouping:= 0L]
 
 # png("./Results/Distribution of the distance between adjacent LoF alleles.png",width= 3000, height= 1500, res=300)
@@ -174,11 +175,11 @@ rm(temp)
 barplot(table(lof_all_filtered_bygene[No_pres_pop==1, col_max])) 
 #dev.off()
 
-lof_all_filtered_bygene[N>1,.N] # 1992 genes have more than on LoF alleles
-lof_all_filtered_bygene[No_pres_pop==8,.N] # 1433 lof genes are shared by all pops
-lof_all_filtered_bygene[No_pres_pop==1,.N] # 984 genes are unique to one pop
+lof_all_filtered_bygene[N>1,.N] # 1436 genes have more than on LoF alleles
+lof_all_filtered_bygene[No_pres_pop==8,.N] # 1092 lof genes are shared by all pops
+lof_all_filtered_bygene[No_pres_pop==1,.N] # 776 genes are unique to one pop
 lof_all_filtered_bygene[No_pres_pop==7 & col_min=="ALF_say",.N] # 92 lof genes are only present in freshwater lakes
-lof_all_filtered_bygene[No_pres_pop==1 & col_max=="ALF_say",.N] # 121 lof genes are only present in say
+lof_all_filtered_bygene[No_pres_pop==1 & col_max=="ALF_say",.N] # 107 lof genes are only present in say
 
 
 
@@ -208,7 +209,7 @@ gene_info_regression[,N_lof:=lof_all_filtered_bygene[match(GeneID,gene_ID),N]]
 gene_info_regression[,lof_pres:=ifelse(is.na(N_lof),0,1)]
 gene_info_regression<-foverlaps(gene_info_regression,recombination_rate[,c("chromosome_reassembled", "position_start","position_reassembled","recomb_rate")],by.x=c("LGn", "start","stop"),by.y=c("chromosome_reassembled", "position_start","position_reassembled"),type="any",mult="first",nomatch=0L)
 
-summary(glm(lof_pres~No_transcript+full_length+total_exon+recomb_rate,data=gene_info_regression,family="binomial"))
+summary(glm(lof_pres~full_length+total_exon+recomb_rate,data=gene_info_regression,family="binomial"))
 
 ## GO analysis
 library(topGO)
